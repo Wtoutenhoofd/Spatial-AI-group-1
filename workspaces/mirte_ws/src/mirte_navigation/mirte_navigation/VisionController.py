@@ -42,8 +42,10 @@ Subscriptions
   /scan          (sensor_msgs/LaserScan) – LiDAR data
 
 Publications
-  /mirte_base_controller/cmd_vel_unstamped     (geometry_msgs/Twist)
+  /mirte_base_controller/cmd_vel_unstamped      (geometry_msgs/Twist)
   /mirte_master_arm_controller/joint_trajectory (trajectory_msgs/JointTrajectory)
+  /state_change                                 (std_msgs/String) – publishes
+      READ_PATTERN when whiteboard is optimally positioned
 """
 
 import json
@@ -301,7 +303,7 @@ class VisionController(Node):
         if self.mode == "DONE":
             self.cmd_pub.publish(Twist())
             done_msg = String()
-            done_msg.data = "DONE"
+            done_msg.data = "READ_PATTERN"
             self.state_pub.publish(done_msg)
             return
 

@@ -9,8 +9,7 @@ Responsibilities
      to initialise) and then transitions to TRACK_WHITEBOARD.
   2. Publishes the current state on /robot_state at 2 Hz so all other
      nodes can always read the latest value.
-  3. Listens on /state_change for transition requests from other nodes
-     (e.g. VisionController signalling DONE).
+  3. Listens on /state_change for transition requests from other nodes.
 
 Topics
 ──────
@@ -23,7 +22,29 @@ Topics
 
 State sequence
 ──────────────
-  RAISE_ARM  →  (arm reaches position)  →  TRACK_WHITEBOARD  →  DONE
+  RAISE_ARM
+      │  arm-raise timer expires
+      ▼
+  TRACK_WHITEBOARD          ← VisionController navigates toward whiteboard
+      │  VisionController publishes READ_PATTERN on /state_change
+      ▼
+  READ_PATTERN              ← Module 3 captures and interprets whiteboard pattern
+      │  Module 3 publishes NAVIGATE_TO_SANDBOX on /state_change
+      ▼
+  NAVIGATE_TO_SANDBOX       ← SandboxNavigator drives robot to sandbox area
+      │  SandboxNavigator publishes DRAW_PATTERN on /state_change
+      ▼
+  DRAW_PATTERN              ← Module 4 executes drawing in sand
+      │  Module 4 publishes DONE on /state_change
+      ▼
+  DONE
+
+Interface contracts (topics other nodes must use)
+──────────────────────────────────────────────────
+  /pattern_data   (std_msgs/String) – Module 3 publishes detected pattern as
+                                      JSON: {"type": "text"|"shape",
+                                             "points": [[x, y], ...]}
+  /draw_complete  (std_msgs/String) – Module 4 publishes "OK" when drawing done
 """
 
 import rclpy
@@ -179,14 +200,21 @@ class StateManager(Node):
         self.current_state = new_state
         self.get_logger().info(f"State → {self.current_state}")
 
-        if new_state == "TRACK_WHITEBOARD":
-            self.get_logger().info("Tracking whiteboard")
+        descriptions = {
+            "TRACK_WHITEBOARD":     "navigating toward whiteboard",
+            "READ_PATTERN":         "Module 3 reading whiteboard pattern",
+            "NAVIGATE_TO_SANDBOX":  "navigating to sandbox area",
+            "DRAW_PATTERN":         "Module 4 drawing pattern in sand",
+            "DONE":                 "task complete",
+        }
+        if new_state in descriptions:
+            self.get_logger().info(descriptions[new_state])
 
         # Broadcast the new state to all subscribers
         self._publish_current_state()
 
         if new_state == "DONE":
-            self.get_logger().info("Task complete – node will shut down")
+            self.get_logger().info("All modules finished – node will shut down")
             # Signal main() to exit the spin loop cleanly
             raise SystemExit
 
