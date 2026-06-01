@@ -1,0 +1,122 @@
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+import subprocess
+import json
+import threading
+import cv2
+import os
+
+from pathlib import Path
+
+workspace = Path.cwd()
+base_dir = workspace.parent.parent
+
+
+class TextDetectionNode(Node):
+
+    def __init__(self):
+        super().__init__("text_detection_node")
+
+        self.pub = self.create_publisher(String, "/whiteboard_text", 10)
+
+        self.bridge = CvBridge()
+        self.image_path = os.path.join("images", "frame.jpg")
+        self.tmp_path = self.image_path + ".tmp"
+
+        self.create_subscription(Image, "/camera/image_raw", self.image_callback, 10)
+        self.create_subscription(String, "/robot_state", self.state_callback, 10)
+
+        self.process = None
+        self.active = False
+
+    def state_callback(self, msg):
+        if msg.data == "READ_WHITEBOARD" and not self.active:
+            self._start_detector()
+        elif msg.data != "READ_WHITEBOARD" and self.active:
+            self._stop_detector()
+
+    def image_callback(self, msg: Image):
+        if not self.active:
+            return
+        try:
+            frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            success, buffer = cv2.imencode(".jpg", frame)
+            if not success:
+                self.get_logger().warn("imencode failed")
+                return
+            with open(self.tmp_path, "wb") as f:
+                f.write(buffer.tobytes())
+            os.replace(self.tmp_path, self.image_path)
+        except Exception as e:
+            self.get_logger().warn(f"Image save error: {e}")
+
+    def _read_loop(self):
+        for line in self.process.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                result = json.loads(line)
+                self._process_result(result)
+            except Exception as e:
+                self.get_logger().warn(f"Parse error: {e} | raw: {line}")
+
+    def _process_result(self, result):
+        if "error" in result:
+            self.get_logger().warn(f"Detector error: {result['error']}")
+            return
+
+        text = result.get("text", "")
+        if not text:
+            return
+
+        msg = String()
+        msg.data = json.dumps(result)
+        self.pub.publish(msg)
+        self.get_logger().info(f"Detected text: {text!r}")
+
+    def _start_detector(self):
+        python_path = base_dir / "ai_env" / "bin" / "python"
+        detector_path = base_dir / "ai_perception" / "TextDetectorLive.py"
+
+        self.process = subprocess.Popen(
+            [str(python_path), str(detector_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        self.active = True
+        self.get_logger().info(f"Started text detector PID: {self.process.pid}")
+        threading.Thread(target=self._read_loop, daemon=True).start()
+
+    def _stop_detector(self):
+        if self.process:
+            self.get_logger().info(f"Stopping text detector PID: {self.process.pid}")
+            self.process.terminate()
+            self.process.wait()
+            self.process = None
+        self.active = False
+
+    def destroy_node(self):
+        self._stop_detector()
+        super().destroy_node()
+
+
+def main():
+    rclpy.init()
+    node = TextDetectionNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
