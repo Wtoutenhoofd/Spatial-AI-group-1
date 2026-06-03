@@ -11,13 +11,13 @@ class TextDetector:
     def __init__(self):
         self.client = InferenceHTTPClient(
             api_url="https://serverless.roboflow.com",
-            api_key="XYZ",  # TODO: replace with your actual API key
+            api_key="ZzFXYrAdgtMPuLDMle9t",
         )
 
     def run_inference(self, image_path: str):
         return self.client.run_workflow(
             workspace_name="spatial-ai-kdgzb",
-            workflow_id="text-detection-ocr",  # TODO: create OCR workflow in Roboflow workspace
+            workflow_id="custom-workflow-2",
             images={"image": image_path},
             use_cache=False,
         )
@@ -29,7 +29,11 @@ def _parse_result(result: list) -> dict:
 
     data = result[0]
 
-    # Workflow with a DocTR OCR block returns a plain text string
+    # custom-workflow-2 returns OCR result under model.result
+    if "model" in data and "result" in data["model"]:
+        return {"text": data["model"]["result"], "words": []}
+
+    # Fallback: plain ocr_text field
     if "ocr_text" in data:
         return {"text": data["ocr_text"], "words": []}
 
