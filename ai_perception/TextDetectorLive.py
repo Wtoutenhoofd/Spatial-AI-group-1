@@ -5,13 +5,14 @@ import json
 from inference_sdk import InferenceHTTPClient
 
 IMAGE_PATH = os.path.join("images", "frame.jpg")
+ROBOFLOW_API_KEY = os.environ["ROBOFLOW_API_KEY"]
 
 
 class TextDetector:
     def __init__(self):
         self.client = InferenceHTTPClient(
             api_url="https://serverless.roboflow.com",
-            api_key="ZzFXYrAdgtMPuLDMle9t",
+            api_key=ROBOFLOW_API_KEY,
         )
 
     def run_inference(self, image_path: str):
