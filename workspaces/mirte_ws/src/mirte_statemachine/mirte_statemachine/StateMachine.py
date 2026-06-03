@@ -161,6 +161,35 @@ class StateManager(Node):
         """
         self._arm_done_timer.cancel()
         self.current_state = "TRACK_WHITEBOARD"
+        msg = String()
+        msg.data = self.current_state
+        self.state_change_pub.publish(msg)
+        self.get_logger().info(
+            f"State -> {self.current_state}"
+        )      
+
+    def state_callback(self,msg):
+        self.current_state = msg.data
+        print(self.current_state)
+        if self.current_state == "TRACK_WHITEBOARD" :
+            self.get_logger().info('Tracking Whiteboard')
+
+        if msg.data == "DONE":
+            if self.current_state == "TRACK_WHITEBOARD":
+                self.current_state = "READ_WHITEBOARD"
+                self.get_logger().info("State -> READ_WHITEBOARD")
+            else:
+                self.get_logger().info("Shutting down")
+                rclpy.shutdown()
+                return
+        msg = String()
+        msg.data = self.current_state
+        self.state_pub.publish(msg)
+        
+    def state_publisher_callback(self):
+        msg = String()
+        msg.data = self.current_state
+        self.state_pub.publish(msg)
         self._publish_state_change(self.current_state)
         self.get_logger().info("Arm raised – transitioning to TRACK_WHITEBOARD")
 

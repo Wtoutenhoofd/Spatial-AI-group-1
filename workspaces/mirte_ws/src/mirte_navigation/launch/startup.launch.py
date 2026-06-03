@@ -18,6 +18,13 @@ def generate_launch_description():
         output='screen'
     )
 
+    text_detector = Node(
+        package='mirte_perception',
+        executable='TextDetector',
+        name='TextDetector',
+        output='screen'
+    )
+
     vision_controller = Node(
         package='mirte_navigation',
         executable='VisionController',
@@ -28,5 +35,6 @@ def generate_launch_description():
     return LaunchDescription([
         state_manager,
         detector,
+        text_detector,
         vision_controller
     ])
