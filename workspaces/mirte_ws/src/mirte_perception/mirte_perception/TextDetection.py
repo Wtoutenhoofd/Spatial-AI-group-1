@@ -21,6 +21,7 @@ class TextDetectionNode(Node):
         super().__init__("text_detection_node")
 
         self.pub = self.create_publisher(String, "/whiteboard_text", 10)
+        self.state_pub = self.create_publisher(String, "/state_change", 10)
 
         self.bridge = CvBridge()
         self.image_path = os.path.join("images", "frame.jpg")
@@ -77,6 +78,11 @@ class TextDetectionNode(Node):
         msg.data = json.dumps(result)
         self.pub.publish(msg)
         self.get_logger().info(f"Detected text: {text!r}")
+
+        done = String()
+        done.data = "DONE"
+        self.state_pub.publish(done)
+        self._stop_detector()
 
     def _start_detector(self):
         python_path = base_dir / "ai_env" / "bin" / "python"

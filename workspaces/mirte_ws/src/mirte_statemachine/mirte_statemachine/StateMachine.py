@@ -86,12 +86,13 @@ class StateManager(Node):
             self.get_logger().info('Tracking Whiteboard')
 
         if msg.data == "DONE":
-            msg = String()
-            msg.data = self.current_state
-            self.state_pub.publish(msg)
-            self.get_logger().info("Shutting down")
-            rclpy.shutdown()
-            return
+            if self.current_state == "TRACK_WHITEBOARD":
+                self.current_state = "READ_WHITEBOARD"
+                self.get_logger().info("State -> READ_WHITEBOARD")
+            else:
+                self.get_logger().info("Shutting down")
+                rclpy.shutdown()
+                return
         msg = String()
         msg.data = self.current_state
         self.state_pub.publish(msg)
