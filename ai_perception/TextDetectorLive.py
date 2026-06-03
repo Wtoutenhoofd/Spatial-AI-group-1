@@ -29,9 +29,9 @@ def _parse_result(result: list) -> dict:
 
     data = result[0]
 
-    # custom-workflow-2 returns OCR result under model.result
-    if "model" in data and "result" in data["model"]:
-        return {"text": data["model"]["result"], "words": []}
+    # custom-workflow-2 returns OCR result under model_output
+    if "model_output" in data:
+        return {"text": data["model_output"], "words": []}
 
     # Fallback: plain ocr_text field
     if "ocr_text" in data:
