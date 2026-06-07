@@ -51,10 +51,14 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 # Calibration – adjust for the real robot
 # ---------------------------------------------------------------------------
 
-L1: float = 0.10              # shoulder → elbow link length (m)
-L2: float = 0.08              # elbow → pen tip link length (m)
+L1: float = 0.1378            # shoulder_lift → elbow link length (m)
+L2: float = 0.1427            # elbow → wrist link length (m)
 
 EFFORT_THRESHOLD: float = 0.5 # joint effort (Nm) that signals sand contact
+
+# Set to True to skip probing and draw at a fixed z height (for testing)
+SKIP_PROBING: bool = True
+Z_SAND_FIXED: float = 0.05    # fixed z height when SKIP_PROBING is True (m)
 
 PROBE_LIFT_START: float = 0.3  # shoulder_lift angle to start probing (rad)
 PROBE_LIFT_STEP:  float = 0.05 # how much to lower each probe step (rad)
@@ -166,9 +170,18 @@ class SandDrawer(Node):
             if not self._text:
                 self.get_logger().warn("No text received yet – waiting for /whiteboard_text")
                 return
-            self.get_logger().info(f"DRAW_PATTERN – probing sand, will draw: {self._text!r}")
-            self._mode = "PROBING"
-            self._start_probe()
+            if SKIP_PROBING:
+                self.z_sand = Z_SAND_FIXED
+                self.get_logger().info(
+                    f"DRAW_PATTERN – skipping probe, z_sand={self.z_sand} m, "
+                    f"will draw: {self._text!r}"
+                )
+                self._mode = "DRAWING"
+                self._draw()
+            else:
+                self.get_logger().info(f"DRAW_PATTERN – probing sand, will draw: {self._text!r}")
+                self._mode = "PROBING"
+                self._start_probe()
         elif msg.data != "DRAW_PATTERN" and self._mode != "IDLE":
             self._cancel_timers()
             self._mode = "IDLE"
