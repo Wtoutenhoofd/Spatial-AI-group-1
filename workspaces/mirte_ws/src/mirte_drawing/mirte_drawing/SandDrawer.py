@@ -70,9 +70,9 @@ PROBE_INTERVAL:   float = 0.5  # seconds between probe steps
 # ---------------------------------------------------------------------------
 
 DRAW_X_CENTER:  float = 0.20  # center x of drawing area (m in front of robot)
-LETTER_WIDTH:   float = 0.025 # width of one letter in sand (m)
-LETTER_HEIGHT:  float = 0.040 # height of one letter in sand (m)
-LETTER_GAP:     float = 0.008 # gap between letters (m)
+LETTER_WIDTH:   float = 0.075 # width of one letter in sand (m)
+LETTER_HEIGHT:  float = 0.120 # height of one letter in sand (m)
+LETTER_GAP:     float = 0.025 # gap between letters (m)
 PEN_LIFT:       float = 0.020 # how much to raise pen between strokes (m)
 DRAW_STEP_SEC:  int   = 1     # seconds per waypoint
 
@@ -338,7 +338,7 @@ class SandDrawer(Node):
         if abs(D) > 1.0:
             return None
 
-        elbow = math.atan2(-math.sqrt(1 - D**2), D)
+        elbow = math.atan2(+math.sqrt(1 - D**2), D)  # elbow-up: shoulder goes down instead of up
         lift  = math.atan2(z, r) - math.atan2(
             L2 * math.sin(elbow),
             L1 + L2 * math.cos(elbow),
