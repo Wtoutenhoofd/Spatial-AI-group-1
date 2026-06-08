@@ -338,12 +338,12 @@ class SandDrawer(Node):
         if abs(D) > 1.0:
             return None
 
-        elbow = math.atan2(+math.sqrt(1 - D**2), D)  # elbow-up: shoulder goes down instead of up
+        elbow = math.atan2(-math.sqrt(1 - D**2), D)
         lift  = math.atan2(z, r) - math.atan2(
             L2 * math.sin(elbow),
             L1 + L2 * math.cos(elbow),
         )
-        return pan, lift, elbow
+        return pan, -lift, elbow
 
     # -- Helpers -------------------------------------------------------------
 
