@@ -74,7 +74,7 @@ LETTER_WIDTH:   float = 0.075 # width of one letter in sand (m)
 LETTER_HEIGHT:  float = 0.120 # height of one letter in sand (m)
 LETTER_GAP:     float = 0.025 # gap between letters (m)
 PEN_LIFT:       float = 0.020 # how much to raise pen between strokes (m)
-DRAW_STEP_SEC:  int   = 1     # seconds per waypoint
+DRAW_STEP_SEC:  int   = 2     # seconds per waypoint
 
 # ---------------------------------------------------------------------------
 # Single-stroke font
@@ -343,7 +343,7 @@ class SandDrawer(Node):
             L2 * math.sin(elbow),
             L1 + L2 * math.cos(elbow),
         )
-        return -pan, -lift - math.pi / 2, elbow
+        return -pan, -lift + math.pi / 2, elbow
 
     # -- Helpers -------------------------------------------------------------
 
