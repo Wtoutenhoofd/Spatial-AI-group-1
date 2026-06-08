@@ -2,67 +2,35 @@ import time
 import os
 import json
 
-from inference_sdk import InferenceHTTPClient
+import cv2
+import pytesseract
+from PIL import Image
 
 IMAGE_PATH = os.path.join("images", "frame.jpg")
-ROBOFLOW_API_KEY = os.environ["ROBOFLOW_API_KEY"]
+
+TESSERACT_CONFIG = "--psm 6 --oem 3"
 
 
-class TextDetector:
-    def __init__(self):
-        self.client = InferenceHTTPClient(
-            api_url="https://serverless.roboflow.com",
-            api_key=ROBOFLOW_API_KEY,
-        )
+def preprocess(image_path: str) -> Image.Image:
+    img = cv2.imread(image_path)
 
-    def run_inference(self, image_path: str):
-        return self.client.run_workflow(
-            workspace_name="spatial-ai-kdgzb",
-            workflow_id="custom-workflow-2",
-            images={"image": image_path},
-            use_cache=False,
-        )
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Scale down to fixed height — tesseract works best with letters ~50-150px tall
+    h, w = gray.shape
+    target_h = 150
+    gray = cv2.resize(gray, (int(w * target_h / h), target_h), interpolation=cv2.INTER_AREA)
+
+    return Image.fromarray(gray)
 
 
-def _parse_result(result: list) -> dict:
-    if not result or not result[0]:
-        return {"text": "", "words": []}
-
-    data = result[0]
-
-    # custom-workflow-2 returns OCR result under model_output
-    if "model_output" in data:
-        return {"text": data["model_output"], "words": []}
-
-    # Fallback: plain ocr_text field
-    if "ocr_text" in data:
-        return {"text": data["ocr_text"], "words": []}
-
-    # Workflow with a text-detection model returns bounding-box predictions
-    # where each class label is the recognised word/character
-    if "predictions" in data and "predictions" in data["predictions"]:
-        words = []
-        full_text_parts = []
-        # Sort top-to-bottom, then left-to-right to reconstruct reading order
-        preds = sorted(data["predictions"]["predictions"], key=lambda p: (p["y"], p["x"]))
-        for pred in preds:
-            text = pred.get("class", "")
-            words.append({
-                "text": text,
-                "x": float(pred["x"]),
-                "y": float(pred["y"]),
-                "width": float(pred["width"]),
-                "height": float(pred["height"]),
-                "confidence": float(pred["confidence"]),
-            })
-            full_text_parts.append(text)
-        return {"text": " ".join(full_text_parts), "words": words}
-
-    return {"text": "", "words": []}
+def run_ocr(image_path: str) -> dict:
+    img = preprocess(image_path)
+    text = pytesseract.image_to_string(img, config=TESSERACT_CONFIG).strip()
+    return {"text": text, "words": []}
 
 
 def main():
-    detector = TextDetector()
     last_mtime: float | None = None
 
     while True:
@@ -78,10 +46,8 @@ def main():
         last_mtime = mtime
 
         try:
-            result = detector.run_inference(IMAGE_PATH)
-            output = _parse_result(result)
+            output = run_ocr(IMAGE_PATH)
             print(json.dumps(output), flush=True)
-
         except Exception as e:
             print(json.dumps({"error": str(e)}), flush=True)
 
