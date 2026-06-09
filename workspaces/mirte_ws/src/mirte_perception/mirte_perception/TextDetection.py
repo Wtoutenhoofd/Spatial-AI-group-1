@@ -24,8 +24,10 @@ class TextDetectionNode(Node):
         self.state_pub = self.create_publisher(String, "/state_change", 10)
 
         self.bridge = CvBridge()
+        os.makedirs("images", exist_ok=True)
         self.image_path = os.path.join("images", "frame.jpg")
         self.tmp_path = self.image_path + ".tmp"
+        self.ocr_debug_path = os.path.join("images", "ocr_input.jpg")
 
         self.create_subscription(Image, "/camera/image_raw", self.image_callback, 10)
         self.create_subscription(String, "/robot_state", self.state_callback, 10)
@@ -51,6 +53,7 @@ class TextDetectionNode(Node):
             with open(self.tmp_path, "wb") as f:
                 f.write(buffer.tobytes())
             os.replace(self.tmp_path, self.image_path)
+            cv2.imwrite(self.ocr_debug_path, frame)
         except Exception as e:
             self.get_logger().warn(f"Image save error: {e}")
 
