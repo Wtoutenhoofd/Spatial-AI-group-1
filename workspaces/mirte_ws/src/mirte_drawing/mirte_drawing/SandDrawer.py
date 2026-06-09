@@ -343,7 +343,7 @@ class SandDrawer(Node):
             L2 * math.sin(elbow),
             L1 + L2 * math.cos(elbow),
         )
-        return -pan, -lift + math.pi / 2, elbow
+        return -pan, -lift - math.pi / 2, elbow
 
     # -- Helpers -------------------------------------------------------------
 
