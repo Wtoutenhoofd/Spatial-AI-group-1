@@ -25,7 +25,7 @@ class TextDetectionNode(Node):
 
         self.bridge = CvBridge()
         os.makedirs("images", exist_ok=True)
-        self.image_path = os.path.join("images", "frame.jpg")
+        self.image_path = os.path.join("images", "text_frame.jpg")
         self.tmp_path = self.image_path + ".tmp"
         self.ocr_debug_path = os.path.join("images", "ocr_input.jpg")
 

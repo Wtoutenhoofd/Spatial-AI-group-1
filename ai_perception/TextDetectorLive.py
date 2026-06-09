@@ -6,7 +6,7 @@ import cv2
 import pytesseract
 from PIL import Image
 
-IMAGE_PATH = os.path.join("images", "frame.jpg")
+IMAGE_PATH = os.path.join("images", "text_frame.jpg")
 
 TESSERACT_CONFIG = "--psm 6 --oem 3"
 
