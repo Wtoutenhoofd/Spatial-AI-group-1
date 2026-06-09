@@ -18,7 +18,7 @@ LIDAR_MIN_RANGE:       float = 0.1
 class WhiteBoardTracker(Node):
 
     def __init__(self) -> None:
-        super().__init__("vision_orientation_controller")
+        super().__init__("WhiteBoardTracker")
 
         # ── Tuning: searching ────────────────────────────────────────────────
         self.stop_distance:      float = 1.2
@@ -84,18 +84,18 @@ class WhiteBoardTracker(Node):
         angle_x: float = data["angle_x"]
         self.last_angle = angle_x
 
-        if self.mode != "DONE":
+        if self.mode != "READ_WHITEBOARD":
             self._set_mode("TRACKING", "target detected")
 
-        if self.mode == "DONE":
+        if self.mode == "READ_WHITEBOARD":
             return
 
-        # ── TRACKING → DONE when close enough ────────────────────────────────
+        # ── TRACKING → READ_WHITEBOARD when close enough ────────────────────────────────
         if self.front_distance < self.stop_distance and self.last_angle < self.angle_accuracy:
-            self._set_mode("DONE", f"distance {self.front_distance:.2f} m < {self.stop_distance} m")
+            self._set_mode("READ_WHITEBOARD", f"distance {self.front_distance:.2f} m < {self.stop_distance} m")
             self.cmd_pub.publish(Twist())
             done_msg = String()
-            done_msg.data = "DONE"
+            done_msg.data = "READ_WHITEBOARD"
             self.state_pub.publish(done_msg)
             return
 
@@ -154,7 +154,7 @@ class WhiteBoardTracker(Node):
     def _background_tick(self) -> None:
         if self.robot_state != "TRACK_WHITEBOARD":
             return
-        if self.mode in ("TRACKING", "DONE"):
+        if self.mode in ("TRACKING", "READ_WHITEBOARD"):
             return
 
         cmd = Twist()

@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'GoalGenerator = mirte_perception.ObjectDetection:main',
+            'FrontScanFilter = mirte_perception.FrontScan:main',
         ],
     },
 )
