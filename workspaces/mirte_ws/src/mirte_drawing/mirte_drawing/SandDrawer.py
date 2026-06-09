@@ -58,7 +58,7 @@ EFFORT_THRESHOLD: float = 0.5 # joint effort (Nm) that signals sand contact
 
 # Set to True to skip probing and draw at a fixed z height (for testing)
 SKIP_PROBING: bool = True
-Z_SAND_FIXED: float = 0.05    # fixed z height when SKIP_PROBING is True (m)
+Z_SAND_FIXED: float = -0.10   # fixed z height when SKIP_PROBING is True (m); negative = below shoulder
 
 PROBE_LIFT_START: float = 0.3  # shoulder_lift angle to start probing (rad)
 PROBE_LIFT_STEP:  float = 0.05 # how much to lower each probe step (rad)
