@@ -29,7 +29,7 @@ class TextDetectionNode(Node):
         self.tmp_path = self.image_path + ".tmp"
         self.ocr_debug_path = os.path.join("images", "ocr_input.jpg")
 
-        self.create_subscription(Image, "/camera/color/image_raw", self.image_callback, 10)
+        self.create_subscription(Image, "/gripper_camera/image_raw", self.image_callback, 10)
         self.create_subscription(String, "/robot_state", self.state_callback, 10)
 
         self.process = None
