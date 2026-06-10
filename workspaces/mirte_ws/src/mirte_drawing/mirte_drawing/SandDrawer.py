@@ -58,7 +58,7 @@ EFFORT_THRESHOLD: float = 0.5 # joint effort (Nm) that signals sand contact
 
 # Set to True to skip probing and draw at a fixed z height (for testing)
 SKIP_PROBING: bool = True
-Z_SAND_FIXED: float = -0.15   # fixed z height when SKIP_PROBING is True (m); negative = below shoulder
+Z_SAND_FIXED: float = -0.22   # fixed z height when SKIP_PROBING is True (m); negative = below shoulder
 
 PROBE_LIFT_START: float = 0.3  # shoulder_lift angle to start probing (rad)
 PROBE_LIFT_STEP:  float = 0.05 # how much to lower each probe step (rad)
@@ -69,7 +69,7 @@ PROBE_INTERVAL:   float = 0.5  # seconds between probe steps
 # Drawing layout
 # ---------------------------------------------------------------------------
 
-DRAW_X_CENTER:  float = 0.20  # center x of drawing area (m in front of robot)
+DRAW_X_CENTER:  float = 0.15  # center x of drawing area (m in front of robot)
 LETTER_WIDTH:   float = 0.075 # width of one letter in sand (m)
 LETTER_HEIGHT:  float = 0.120 # height of one letter in sand (m)
 LETTER_GAP:     float = 0.025 # gap between letters (m)
@@ -221,7 +221,7 @@ class SandDrawer(Node):
         if effort >= EFFORT_THRESHOLD:
             lift  = self._joint_positions.get("shoulder_lift_joint", self._probe_lift)
             elbow = self._joint_positions.get("elbow_joint", 0.0)
-            self.z_sand = L1 * math.sin(lift) + L2 * math.sin(lift + elbow)
+            self.z_sand = L1 * math.cos(lift) + L2 * math.cos(lift + elbow)
             self.get_logger().info(
                 f"Sand contact: effort={effort:.2f} Nm  z_sand={self.z_sand:.3f} m"
             )
@@ -339,7 +339,8 @@ class SandDrawer(Node):
             return None
 
         elbow = math.atan2(-math.sqrt(1 - D**2), D)
-        lift  = math.atan2(z, r) - math.atan2(
+        # atan2(r, z): lift measured from vertical (0 = arm up), matching sim convention
+        lift  = math.atan2(r, z) - math.atan2(
             L2 * math.sin(elbow),
             L1 + L2 * math.cos(elbow),
         )
