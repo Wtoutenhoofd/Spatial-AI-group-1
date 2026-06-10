@@ -46,8 +46,11 @@ Kinematics (verified against the real Mirte Master URDF)
   ground. The pen/gripper mounted below the wrist bridges that last gap,
   so we keep the wrist at WRIST_DRAW_HEIGHT and let the pen touch the sand.
 
-  Net effect: the drawable area is a small band roughly 0.095–0.155 m in
-  front of the robot. Keep the letters small (see layout constants below).
+  Direction: shoulder_pan's zero points to the BACK and it only swings ±90°,
+  so reaching the robot FRONT uses the mirrored fold (negative reach, with
+  negative lift/elbow). The drawable area is a band roughly 0.265–0.335 m in
+  FRONT of the robot (the arm is mounted ~0.08 m ahead of base centre). Keep
+  the letters small (see layout constants below).
 
 Calibration – adjust for your robot/sim
   WRIST_DRAW_HEIGHT  – wrist z (frame_link) while drawing; lower it if the
@@ -99,18 +102,19 @@ WRIST_DRAW_ANGLE:  float = 0.0   # wrist_joint angle to aim the pen downward (ra
 
 PEN_LIFT: float = 0.020       # how much to raise the wrist between strokes (m)
 
-PROBE_LIFT_START: float = 1.2  # shoulder_lift angle to start probing (rad, <pi/2)
-PROBE_LIFT_STEP:  float = 0.05 # how much to raise lift toward horizontal each step
-PROBE_LIFT_MAX:   float = 1.55 # abort if probe reaches this angle (≈ pi/2)
-PROBE_INTERVAL:   float = 0.5  # seconds between probe steps
+# Probing lowers the wrist height at the draw centre until effort spikes.
+PROBE_Z_START: float = 0.05   # wrist height to start probing from (m)
+PROBE_Z_STEP:  float = 0.01   # how much to lower the wrist each probe step (m)
+PROBE_Z_MIN:   float = -0.05  # abort if probe reaches this height without contact
+PROBE_INTERVAL: float = 0.5   # seconds between probe steps
 
 # ---------------------------------------------------------------------------
 # Drawing layout  (sized to the reachable band – keep letters small!)
 # ---------------------------------------------------------------------------
 
-DRAW_X_CENTER:  float = 0.115 # center forward distance of drawing area (m)
-LETTER_HEIGHT:  float = 0.040 # letter extent in the forward direction (m)
-LETTER_WIDTH:   float = 0.035 # letter extent in the lateral direction (m)
+DRAW_X_CENTER:  float = 0.290 # center forward distance of drawing area (m)
+LETTER_HEIGHT:  float = 0.050 # letter extent in the forward direction (m)
+LETTER_WIDTH:   float = 0.040 # letter extent in the lateral direction (m)
 LETTER_GAP:     float = 0.015 # gap between letters (m)
 DRAW_STEP_SEC:  int   = 2     # seconds per waypoint
 
@@ -197,7 +201,7 @@ class SandDrawer(Node):
         self._joint_positions: dict[str, float] = {}
         self._joint_efforts:   dict[str, float] = {}
 
-        self._probe_lift: float = PROBE_LIFT_START
+        self._probe_z: float = PROBE_Z_START
         self._probe_timer = None
         self._done_timer  = None
 
@@ -242,15 +246,23 @@ class SandDrawer(Node):
                 self._joint_efforts[name] = msg.effort[i]
 
     # -- Probing -------------------------------------------------------------
-    # Probing lowers the wrist by driving shoulder_lift toward horizontal
-    # (pi/2). The wrist height for a given (lift, elbow) follows the same
-    # from-vertical convention as the IK/FK below.
+    # Probing lowers the wrist height at the draw centre (via IK) until the
+    # joint effort spikes, then records that height as the drawing height.
 
     def _start_probe(self) -> None:
-        self._probe_lift = PROBE_LIFT_START
-        self._send_arm(pan=0.0, lift=self._probe_lift, elbow=0.0,
-                       wrist=WRIST_DRAW_ANGLE, duration=1)
+        self._probe_z = PROBE_Z_START
+        self._probe_to(self._probe_z, duration=1)
         self._probe_timer = self.create_timer(PROBE_INTERVAL, self._probe_step)
+
+    def _probe_to(self, z: float, duration: float) -> None:
+        sol = self._ik(DRAW_X_CENTER, 0.0, z)
+        if sol is None:
+            self.get_logger().warn(f"Probe height z={z:.3f} unreachable – aborting")
+            self._probe_timer.cancel()
+            self._mode = "IDLE"
+            return
+        pan, lift, elbow, wrist = sol
+        self._send_arm(pan=pan, lift=lift, elbow=elbow, wrist=wrist, duration=duration)
 
     def _probe_step(self) -> None:
         if self._mode != "PROBING":
@@ -263,9 +275,7 @@ class SandDrawer(Node):
         )
 
         if effort >= EFFORT_THRESHOLD:
-            lift  = self._joint_positions.get("shoulder_lift_joint", self._probe_lift)
-            elbow = self._joint_positions.get("elbow_joint", 0.0)
-            self._draw_z = SHOULDER_Z + L1 * math.cos(lift) + L2 * math.cos(lift + elbow)
+            self._draw_z = self._probe_z
             self.get_logger().info(
                 f"Sand contact: effort={effort:.2f} Nm  wrist_z={self._draw_z:.3f} m"
             )
@@ -274,18 +284,17 @@ class SandDrawer(Node):
             self._draw()
             return
 
-        self._probe_lift += PROBE_LIFT_STEP
-        if self._probe_lift > PROBE_LIFT_MAX:
-            self.get_logger().warn("Probe reached maximum angle without contact")
+        self._probe_z -= PROBE_Z_STEP
+        if self._probe_z < PROBE_Z_MIN:
+            self.get_logger().warn("Probe reached minimum height without contact")
             self._probe_timer.cancel()
             self._mode = "IDLE"
             return
 
         self.get_logger().info(
-            f"Probing: lift={math.degrees(self._probe_lift):.1f}°  effort={effort:.2f}"
+            f"Probing: wrist_z={self._probe_z:.3f} m  effort={effort:.2f}"
         )
-        self._send_arm(pan=0.0, lift=self._probe_lift, elbow=0.0,
-                       wrist=WRIST_DRAW_ANGLE, duration=PROBE_INTERVAL)
+        self._probe_to(self._probe_z, duration=PROBE_INTERVAL)
 
     # -- Drawing -------------------------------------------------------------
 
@@ -336,7 +345,7 @@ class SandDrawer(Node):
         self._done_timer = self.create_timer(float(t), self._on_draw_complete)
 
     def _text_to_waypoints(self, text: str) -> list[tuple[float, float, float]]:
-        """Convert text to (forward, lateral, z) frame_link coords with pen-up moves."""
+        """Convert text to (forward, lateral, z) base-frame coords with pen-up moves."""
         n = len(text)
         total_w = n * LETTER_WIDTH + max(0, n - 1) * LETTER_GAP
         lat_start = -total_w / 2  # centre the text laterally
@@ -378,30 +387,38 @@ class SandDrawer(Node):
 
     # -- Forward / inverse kinematics ---------------------------------------
     # Derived and numerically verified against the real Mirte Master URDF.
-    # Joint variables are sent to the controller directly (no extra negation).
+    # Coordinates are in the robot BASE frame: +x = forward (robot front),
+    # +y = left, z = height (frame_link). Joint variables are sent to the
+    # controller directly (no extra negation).
     #   pan   = shoulder_pan_joint   lift = shoulder_lift_joint
     #   elbow = elbow_joint          wrist = wrist_joint
-    # Angles for lift/elbow are measured from vertical (0 = link points up).
+    # lift/elbow are measured from vertical (0 = link points up).
+    #
+    # The shoulder pan is limited to ±90° and its zero points to the BACK of
+    # the robot, so reaching the FRONT requires the mirrored arm fold:
+    # negative reach, with negative lift and elbow. Drawing therefore happens
+    # in a band roughly 0.265–0.335 m in front of the robot.
 
-    def _fk_wrist(self, pan: float, lift: float, elbow: float) -> tuple[float, float, float]:
-        """Forward kinematics to the wrist origin → (forward, lateral, z)."""
+    def _fk_base(self, pan: float, lift: float, elbow: float) -> tuple[float, float, float]:
+        """Forward kinematics to the wrist origin → base (forward, left, z)."""
         s2, c2   = math.sin(lift), math.cos(lift)
         s23, c23 = math.sin(lift + elbow), math.cos(lift + elbow)
         reach = L1 * s2 + L2 * s23 - REACH_OFFSET
-        lateral = -math.sin(pan) * reach
-        forward = -SHOULDER_Y + math.cos(pan) * reach
+        forward = SHOULDER_Y - math.cos(pan) * reach
+        left    = -math.sin(pan) * reach
         z = SHOULDER_Z + L1 * c2 + L2 * c23
-        return forward, lateral, z
+        return forward, left, z
 
     def _ik(self, forward: float, lateral: float, z: float) -> tuple | None:
         """
-        Inverse kinematics for the wrist origin.
+        Inverse kinematics for the wrist origin, reaching toward the robot
+        FRONT. (forward, lateral, z) are base-frame coords (+forward, +left).
         Returns (pan, lift, elbow, wrist) within ±90° limits, or None if the
         target is unreachable / would violate a joint limit.
         """
-        dy = forward + SHOULDER_Y
-        reach = math.hypot(lateral, dy)
-        pan = math.atan2(-lateral, dy)
+        cx = forward - SHOULDER_Y
+        reach = -math.hypot(cx, lateral)   # negative → front (mirrored) fold
+        pan = math.atan2(lateral, cx)
 
         a = reach + REACH_OFFSET          # horizontal component of the 2-link
         b = z - SHOULDER_Z                # vertical component (from pivot)
@@ -434,7 +451,7 @@ class SandDrawer(Node):
             )
         else:
             pan, lift, elbow, wrist = sol
-            fwd, lat, z = self._fk_wrist(pan, lift, elbow)
+            fwd, lat, z = self._fk_base(pan, lift, elbow)
             err = math.dist((fwd, lat, z), center)
             self.get_logger().info(
                 f"IK self-test OK: center {center} → "
@@ -444,7 +461,7 @@ class SandDrawer(Node):
 
         lo = hi = None
         f = 0.05
-        while f < 0.25:
+        while f < 0.45:
             if self._ik(f, 0.0, WRIST_DRAW_HEIGHT) is not None:
                 lo = f if lo is None else lo
                 hi = f
