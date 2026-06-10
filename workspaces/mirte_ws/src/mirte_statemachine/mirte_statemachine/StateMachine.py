@@ -24,7 +24,7 @@ Topics
 State sequence
 ──────────────
   RAISE_ARM  →  (arm reaches position)  →  TRACK_SANDPIT
-            →  (whiteboard reached)      →  READ_WHITEBOARD
+            →  (whiteboard reached)      →  READ_SANDPIT
             →  (reading complete)        →  DONE
 """
 
@@ -52,8 +52,8 @@ STARTUP_DELAY: float = 7.0
 # it to, or None if DONE means shut down.
 _NEXT_STATE: dict[str, str | None] = {
     "RAISE_ARM":        "TRACK_SANDPIT",
-    "TRACK_SANDPIT": "READ_WHITEBOARD",
-    "READ_WHITEBOARD":  None,   # DONE here → shutdown
+    "TRACK_SANDPIT": "READ_SANDPIT",
+    "READ_SANDPIT":  None,   # DONE here → shutdown
 }
 
 
