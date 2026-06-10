@@ -6,7 +6,7 @@ ROS 2 node that owns and broadcasts the robot's top-level state.
 Responsibilities
 ────────────────
   1. Raises the arm once at startup (allowing time for the arm controller
-     to initialise) and then transitions to TRACK_WHITEBOARD.
+     to initialise) and then transitions to TRACK_SANDPIT.
   2. Publishes the current state on /robot_state at 2 Hz so all other
      nodes can always read the latest value.
   3. Listens on /state_change for transition requests from other nodes
@@ -23,7 +23,7 @@ Topics
 
 State sequence
 ──────────────
-  RAISE_ARM  →  (arm reaches position)  →  TRACK_WHITEBOARD
+  RAISE_ARM  →  (arm reaches position)  →  TRACK_SANDPIT
             →  (whiteboard reached)      →  READ_WHITEBOARD
             →  (reading complete)        →  DONE
 """
@@ -40,7 +40,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 # ---------------------------------------------------------------------------
 
 # Time (s) given for the arm-raise trajectory to complete before the node
-# transitions to TRACK_WHITEBOARD.  Must match (or exceed) the trajectory's
+# transitions to TRACK_SANDPIT.  Must match (or exceed) the trajectory's
 # time_from_start.sec value.
 ARM_RAISE_DURATION: int = 7
 
@@ -51,8 +51,8 @@ STARTUP_DELAY: float = 7.0
 # Valid state transitions: maps each state to the state a DONE signal advances
 # it to, or None if DONE means shut down.
 _NEXT_STATE: dict[str, str | None] = {
-    "RAISE_ARM":        "TRACK_WHITEBOARD",
-    "TRACK_WHITEBOARD": "READ_WHITEBOARD",
+    "RAISE_ARM":        "TRACK_SANDPIT",
+    "TRACK_SANDPIT": "READ_WHITEBOARD",
     "READ_WHITEBOARD":  None,   # DONE here → shutdown
 }
 
@@ -132,7 +132,7 @@ class StateManager(Node):
         Send a joint-trajectory command to fold the arm upward so that it
         does not occlude the forward LiDAR beam.
 
-        The transition to TRACK_WHITEBOARD is scheduled via a one-shot timer
+        The transition to TRACK_SANDPIT is scheduled via a one-shot timer
         (``ARM_RAISE_DURATION`` seconds) instead of blocking with
         ``time.sleep()``, which would freeze the ROS 2 executor.
         """
@@ -170,7 +170,7 @@ class StateManager(Node):
         Cancels itself (one-shot behaviour) and triggers the next state.
         """
         self._arm_done_timer.cancel()
-        self.current_state = "TRACK_WHITEBOARD"
+        self.current_state = "TRACK_SANDPIT"
         msg = String()
         msg.data = self.current_state
         self.state_change_pub.publish(msg)
@@ -182,7 +182,7 @@ class StateManager(Node):
         """
         Handle an incoming state-transition request.
 
-        Plain state names (e.g. "TRACK_WHITEBOARD") set the state directly.
+        Plain state names (e.g. "TRACK_SANDPIT") set the state directly.
         The special token "DONE" advances the current state using the
         ``_NEXT_STATE`` table; if the table maps to None the task is complete
         and the node exits cleanly.

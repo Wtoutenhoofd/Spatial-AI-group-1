@@ -36,9 +36,9 @@ class TextDetectionNode(Node):
         self.active = False
 
     def state_callback(self, msg):
-        if msg.data == "READ_WHITEBOARD" and not self.active:
+        if msg.data == "READ_SANDPIT" and not self.active:
             self._start_detector()
-        elif msg.data != "READ_WHITEBOARD" and self.active:
+        elif msg.data != "READ_SANDPIT" and self.active:
             self._stop_detector()
 
     def image_callback(self, msg: Image):

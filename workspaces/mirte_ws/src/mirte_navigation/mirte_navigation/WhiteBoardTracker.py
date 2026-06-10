@@ -77,7 +77,7 @@ class WhiteBoardTracker(Node):
         self._nudging = False
         self.frame += 1
 
-        if self.robot_state != "TRACK_WHITEBOARD":
+        if self.robot_state != "TRACK_SANDPIT":
             return
 
         data    = json.loads(msg.data)
@@ -152,7 +152,7 @@ class WhiteBoardTracker(Node):
     # -- Background tick -----------------------------------------------------
 
     def _background_tick(self) -> None:
-        if self.robot_state != "TRACK_WHITEBOARD":
+        if self.robot_state != "TRACK_SANDPIT":
             return
         if self.mode in ("TRACKING", "DONE"):
             return

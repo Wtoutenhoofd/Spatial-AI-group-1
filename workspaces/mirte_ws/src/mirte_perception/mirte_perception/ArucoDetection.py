@@ -27,7 +27,7 @@ IMAGE_HEIGHT = 480
 
 TARGET_MARKER_ID = 0
 
-ACTIVE_STATE = "TRACK_WHITEBOARD"
+ACTIVE_STATE = "TRACK_SANDPIT"
 
 
 # ------------------------------------------------------------------
