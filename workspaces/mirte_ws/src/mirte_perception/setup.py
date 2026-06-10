@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'GoalGenerator = mirte_perception.ObjectDetection:main',
+            'GoalGenerator = mirte_perception.WhiteBoardDetector:main',
             'ArucoDetector = mirte_perception.ArucoDetection:main',
         ],
     },

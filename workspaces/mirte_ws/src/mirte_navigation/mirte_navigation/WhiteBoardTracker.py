@@ -8,13 +8,44 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
-from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 
 FRONT_CONE_HALF_ANGLE: float = 0.15
 LIDAR_MIN_RANGE:       float = 0.1
+SCAN_OFFSET = 1.57
 
 ACTIVE_STATES: frozenset[str] = frozenset({"TRACK_WHITEBOARD", "TRACK_SANDPIT"})
+
+# ── Per-state tuning profiles ─────────────────────────────────────────────────
+# Add or edit entries here; keys must match the strings in ACTIVE_STATES.
+PROFILES: dict[str, dict] = {
+    "TRACK_WHITEBOARD": {
+        "stop_distance":       1.5,   # m  – LiDAR stop threshold
+        "target_timeout":      3.0,    # s  – before nudge / recovery
+        "search_nudge_angle":  0.3,    # rad
+        "search_nudge_speed":  0.3,    # rad/s
+        "angle_accuracy":      0.05,   # rad – centering deadband
+        "base_kp":             5.0,
+        "base_max_vel":        0.5,    # rad/s
+        "track_linear":        0.2,    # m/s
+        "centering_kp":        3.0,
+        "centering_max_vel":   0.3,    # rad/s
+        "centering_hold_time": 0.5,    # s
+    },
+    "TRACK_SANDPIT": {
+        "stop_distance":       0.10,   # m  – get closer to the sandpit
+        "target_timeout":      2.0,
+        "search_nudge_angle":  0.3,
+        "search_nudge_speed":  0.3,
+        "angle_accuracy":      0.05,
+        "base_kp":             4.0,    # slightly softer approach
+        "base_max_vel":        0.4,
+        "track_linear":        0.15,   # slower final approach
+        "centering_kp":        2.5,
+        "centering_max_vel":   0.25,
+        "centering_hold_time": 0.5,
+    },
+}
 
 
 class WhiteBoardTracker(Node):
@@ -22,32 +53,20 @@ class WhiteBoardTracker(Node):
     def __init__(self) -> None:
         super().__init__("vision_orientation_controller")
 
-        # ── Tuning: searching ────────────────────────────────────────────────
-        self.stop_distance:      float = 0.6
-        self.target_timeout:     float = 5.0
-        self.search_nudge_angle: float = 0.3
-        self.search_nudge_speed: float = 0.3
-
-        # ── Tuning: orientation correction ───────────────────────────────────
-        self.angle_accuracy:         float = 0.05   # rad – deadband for "centred"
-        self.centering_kp:           float = 3.0    # gentler gain while centering
-        self.centering_max_vel:      float = 0.3
-        self.centering_hold_time:    float = 0.5    # s centred before DONE fires
-        self.base_kp:                float = 5.0
-        self.base_max_vel:           float = 0.5
-        self.track_linear:           float = 0.2
+        # ── Active tuning (loaded from PROFILES on state change) ─────────────
+        self._load_profile("TRACK_WHITEBOARD")   # sensible defaults until first state arrives
 
         # ── State ────────────────────────────────────────────────────────────
-        self.mode:                str         = "SEARCHING"
-        self.robot_state:         str         = "IDLE"
-        self.frame:               int         = 0
-        self.last_angle:          float       = 0.0
-        self.front_distance:      float       = float("inf")
-        self.last_detection_time: float       = time.time()
+        self.mode:                str          = "SEARCHING"
+        self.robot_state:         str          = "IDLE"
+        self.frame:               int          = 0
+        self.last_angle:          float        = 0.0
+        self.front_distance:      float        = float("inf")
+        self.last_detection_time: float        = time.time()
         self.recovery_start:      float | None = None
-        self._nudging:            bool        = False
-        self._nudge_remaining:    float       = 0.0
-        self._centred_since:      float | None = None   # timestamp when centering lock began
+        self._nudging:            bool         = False
+        self._nudge_remaining:    float        = 0.0
+        self._centred_since:      float | None = None
 
         self.get_logger().info("Mode → SEARCHING  (wait-and-nudge sweep)")
 
@@ -62,6 +81,28 @@ class WhiteBoardTracker(Node):
 
         # ── Background tick (10 Hz) ───────────────────────────────────────────
         self.create_timer(0.1, self._background_tick)
+
+    # -- Profile loading ------------------------------------------------------
+
+    def _load_profile(self, state: str) -> None:
+        """Copy the tuning values for *state* onto self.* attributes."""
+        p = PROFILES[state]
+        self.stop_distance       = p["stop_distance"]
+        self.target_timeout      = p["target_timeout"]
+        self.search_nudge_angle  = p["search_nudge_angle"]
+        self.search_nudge_speed  = p["search_nudge_speed"]
+        self.angle_accuracy      = p["angle_accuracy"]
+        self.base_kp             = p["base_kp"]
+        self.base_max_vel        = p["base_max_vel"]
+        self.track_linear        = p["track_linear"]
+        self.centering_kp        = p["centering_kp"]
+        self.centering_max_vel   = p["centering_max_vel"]
+        self.centering_hold_time = p["centering_hold_time"]
+        self.get_logger().info(
+            f"Loaded profile '{state}': "
+            f"stop_distance={self.stop_distance} m  "
+            f"track_linear={self.track_linear} m/s"
+        )
 
     # -- Helpers -------------------------------------------------------------
 
@@ -97,6 +138,7 @@ class WhiteBoardTracker(Node):
         if self.front_distance < self.stop_distance and self.mode != "CENTERING":
             self._set_mode("CENTERING", f"distance {self.front_distance:.2f} m < {self.stop_distance} m")
             self._centred_since = None
+            return
 
         if self.mode == "CENTERING":
             self._apply_centering(angle_x)
@@ -110,18 +152,18 @@ class WhiteBoardTracker(Node):
         readings: list[float] = []
         angle = msg.angle_min
         for r in msg.ranges:
-            if (-1.57 - FRONT_CONE_HALF_ANGLE < angle < -1.57 + FRONT_CONE_HALF_ANGLE
+            if (SCAN_OFFSET - FRONT_CONE_HALF_ANGLE < angle < SCAN_OFFSET + FRONT_CONE_HALF_ANGLE
                     and math.isfinite(r) and r > LIDAR_MIN_RANGE):
                 readings.append(r)
             angle += msg.angle_increment
         self.front_distance = min(readings) if readings else float("inf")
+        print(self.front_distance)
 
     def _state_callback(self, msg: String) -> None:
         new_state = msg.data
         if new_state != self.robot_state and new_state in ACTIVE_STATES:
-            self.get_logger().info(
-                f"Robot state → {new_state}, resetting tracker to SEARCHING"
-            )
+            self.get_logger().info(f"Robot state → {new_state}, resetting tracker")
+            self._load_profile(new_state)
             self.mode = "SEARCHING"
             self.last_detection_time = time.time()
             self._nudging = False
@@ -132,9 +174,7 @@ class WhiteBoardTracker(Node):
     # -- Orientation correction ----------------------------------------------
 
     def _apply_orientation_correction(self, angle_x: float) -> None:
-        """Normal proportional approach used during TRACKING."""
         x_active = abs(angle_x) > self.angle_accuracy
-
         cmd = Twist()
         if x_active:
             cmd.angular.z = self._clamp(self.base_kp * angle_x, self.base_max_vel)
@@ -143,26 +183,19 @@ class WhiteBoardTracker(Node):
         self.cmd_pub.publish(cmd)
 
         self.get_logger().info(
-            f"Frame {self.frame}: "
-            f"ax={angle_x:+.3f}  "
+            f"Frame {self.frame}: ax={angle_x:+.3f}  "
             f"base={'ON' if x_active else 'off'}  "
             f"fwd={'ON' if not x_active else 'off'}"
         )
 
     def _apply_centering(self, angle_x: float) -> None:
-        """
-        Rotate in place to bring the target to the image centre.
-        Once centred for ``centering_hold_time`` seconds, stop and publish DONE.
-        """
         centred = abs(angle_x) < self.angle_accuracy
 
         if centred:
             if self._centred_since is None:
                 self._centred_since = time.time()
                 self.get_logger().info("Centred – holding to confirm…")
-
             if time.time() - self._centred_since >= self.centering_hold_time:
-                # Confirmed centred – we're done
                 self.cmd_pub.publish(Twist())
                 self._set_mode("DONE", "centred on target")
                 done_msg = String()
@@ -170,10 +203,8 @@ class WhiteBoardTracker(Node):
                 self.state_pub.publish(done_msg)
                 return
         else:
-            # Lost centre lock – reset hold timer
             self._centred_since = None
 
-        # Rotate gently toward centre; no forward motion
         cmd = Twist()
         cmd.angular.z = self._clamp(self.centering_kp * angle_x, self.centering_max_vel)
         self.cmd_pub.publish(cmd)
@@ -194,7 +225,6 @@ class WhiteBoardTracker(Node):
         cmd = Twist()
         time_since_seen = time.time() - self.last_detection_time
 
-        # ── RECOVERY ─────────────────────────────────────────────────────────
         if self.mode == "RECOVERY":
             elapsed = time.time() - self.recovery_start
             if elapsed < 1.0:
@@ -208,12 +238,10 @@ class WhiteBoardTracker(Node):
             self.cmd_pub.publish(cmd)
             return
 
-        # ── TRACKING → RECOVERY on lost target ───────────────────────────────
         if self.mode == "TRACKING" and time_since_seen > self.target_timeout:
             self._set_mode("RECOVERY", "target lost")
             self.recovery_start = time.time()
 
-        # ── SEARCHING: wait → nudge loop ─────────────────────────────────────
         if self.mode == "SEARCHING":
             if not self._nudging:
                 if time_since_seen > self.target_timeout:
