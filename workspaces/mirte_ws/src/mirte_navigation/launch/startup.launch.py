@@ -13,8 +13,8 @@ def generate_launch_description():
 
     detector = Node(
         package='mirte_perception',
-        executable='GoalGenerator',
-        name='GoalGenerator',
+        executable='ArucoDetector',
+        name='ArucoDetector',
         output='screen'
     )
 

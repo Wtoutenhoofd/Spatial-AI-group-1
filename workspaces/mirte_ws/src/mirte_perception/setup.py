@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'GoalGenerator = mirte_perception.ObjectDetection:main',
             'TextDetector = mirte_perception.TextDetection:main',
+            'ArucoDetector = mirte_perception.ArucoDetection:main',
         ],
     },
 )
