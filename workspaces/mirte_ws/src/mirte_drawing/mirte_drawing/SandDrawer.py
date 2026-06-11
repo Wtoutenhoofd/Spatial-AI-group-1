@@ -141,6 +141,10 @@ STRAFE_SPEED:   float = 0.05  # base strafe speed (m/s)
 STRAFE_SIGN:    float = -1.0  # +1 = base moves left (+y); -1 = right. Flip if word is mirrored
 STRAFE_TIMEOUT: float = 15.0  # safety: max seconds for one strafe before giving up
 TRAVEL_LIFT:    float = 0.015 # extra wrist lift while the base is moving (m)
+# Closed-loop uses /odom to strafe exactly LETTER_PITCH. Set False if the base
+# strafes but odom does not report lateral motion (then it drives open-loop for
+# distance / STRAFE_SPEED seconds instead).
+STRAFE_CLOSED_LOOP: bool = True
 
 # ---------------------------------------------------------------------------
 # Single-stroke font
@@ -469,16 +473,31 @@ class SandDrawer(Node):
 
         elapsed = self._now() - self._strafe_t0
 
-        if self._strafe_start is not None and self._odom_xy is not None:
+        use_odom = (STRAFE_CLOSED_LOOP and self._strafe_start is not None
+                    and self._odom_xy is not None)
+        if use_odom:
             moved = math.dist(self._odom_xy, self._strafe_start)
             done = moved >= distance
         else:
-            # open-loop fallback: drive for distance / speed seconds
+            # open-loop: drive for distance / speed seconds
             done = elapsed >= distance / STRAFE_SPEED
 
         if done or elapsed >= STRAFE_TIMEOUT:
             if elapsed >= STRAFE_TIMEOUT and not done:
-                self.get_logger().warn("Strafe timed out – continuing anyway")
+                if self._odom_xy is None:
+                    self.get_logger().warn(
+                        "Strafe timed out – no odom received on "
+                        f"{ODOM_TOPIC}; check the topic name"
+                    )
+                else:
+                    moved = (math.dist(self._odom_xy, self._strafe_start)
+                             if self._strafe_start is not None else 0.0)
+                    self.get_logger().warn(
+                        f"Strafe timed out – odom moved only {moved*1000:.0f} mm "
+                        f"of {distance*1000:.0f} mm in {elapsed:.1f} s. Base not "
+                        f"responding to {BASE_CMD_TOPIC}, or odom ignores lateral "
+                        f"motion. (start={self._strafe_start}, now={self._odom_xy})"
+                    )
             self._stop_base()
             if self._strafe_timer:
                 self._strafe_timer.cancel()
