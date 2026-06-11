@@ -67,6 +67,8 @@ import math
 import rclpy
 from rclpy.node import Node
 
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -112,11 +114,27 @@ PROBE_INTERVAL: float = 0.5   # seconds between probe steps
 # Drawing layout  (sized to the reachable band – keep letters small!)
 # ---------------------------------------------------------------------------
 
-DRAW_X_CENTER:  float = 0.290 # center forward distance of drawing area (m)
-LETTER_HEIGHT:  float = 0.050 # letter extent in the forward direction (m)
+DRAW_X_CENTER:  float = 0.295 # center forward distance of drawing area (m)
+LETTER_HEIGHT:  float = 0.040 # letter extent in the forward direction (m)
 LETTER_WIDTH:   float = 0.040 # letter extent in the lateral direction (m)
 LETTER_GAP:     float = 0.015 # gap between letters (m)
 DRAW_STEP_SEC:  int   = 2     # seconds per waypoint
+
+# Center-to-center spacing between consecutive letters (m). Each letter is
+# drawn centred in front of the arm; the base strafes this exact distance
+# between letters, so a word of any length stays within the arm's reach.
+LETTER_PITCH:   float = LETTER_WIDTH + LETTER_GAP
+
+# ---------------------------------------------------------------------------
+# Base motion – per-letter sideways shift (mecanum strafe)
+# ---------------------------------------------------------------------------
+
+BASE_CMD_TOPIC: str   = "/mirte_base_controller/cmd_vel_unstamped"
+ODOM_TOPIC:     str   = "/odom"
+STRAFE_SPEED:   float = 0.05  # base strafe speed (m/s)
+STRAFE_SIGN:    float = -1.0  # +1 = base moves left (+y); -1 = right. Flip if word is mirrored
+STRAFE_TIMEOUT: float = 15.0  # safety: max seconds for one strafe before giving up
+TRAVEL_LIFT:    float = 0.040 # extra wrist lift while the base is moving (m)
 
 # ---------------------------------------------------------------------------
 # Single-stroke font
@@ -187,11 +205,13 @@ class SandDrawer(Node):
             "/mirte_master_arm_controller/joint_trajectory",
             10,
         )
+        self.base_pub  = self.create_publisher(Twist, BASE_CMD_TOPIC, 10)
 
         # ── Subscribers ──────────────────────────────────────────────────────
         self.create_subscription(String,     "/robot_state",     self._state_callback,      10)
         self.create_subscription(String,     "/whiteboard_text", self._text_callback,        10)
         self.create_subscription(JointState, "/joint_states",    self._joint_state_callback, 10)
+        self.create_subscription(Odometry,   ODOM_TOPIC,         self._odom_callback,        10)
 
         # ── Internal state ───────────────────────────────────────────────────
         self._mode: str             = "IDLE"
@@ -200,10 +220,18 @@ class SandDrawer(Node):
 
         self._joint_positions: dict[str, float] = {}
         self._joint_efforts:   dict[str, float] = {}
+        self._odom_xy: tuple[float, float] | None = None
 
         self._probe_z: float = PROBE_Z_START
         self._probe_timer = None
         self._done_timer  = None
+
+        # Per-letter drawing / strafing state
+        self._letters: list[str] = []
+        self._letter_idx: int    = 0
+        self._strafe_timer       = None
+        self._strafe_start: tuple[float, float] | None = None
+        self._strafe_t0: float   = 0.0
 
         self._selftest()
 
@@ -244,6 +272,9 @@ class SandDrawer(Node):
                 self._joint_positions[name] = msg.position[i]
             if i < len(msg.effort):
                 self._joint_efforts[name] = msg.effort[i]
+
+    def _odom_callback(self, msg: Odometry) -> None:
+        self._odom_xy = (msg.pose.pose.position.x, msg.pose.pose.position.y)
 
     # -- Probing -------------------------------------------------------------
     # Probing lowers the wrist height at the draw centre (via IK) until the
@@ -299,17 +330,86 @@ class SandDrawer(Node):
     # -- Drawing -------------------------------------------------------------
 
     def _draw(self) -> None:
-        waypoints = self._text_to_waypoints(self._text)
-        if not waypoints:
-            self.get_logger().warn("No drawable characters in text")
+        """Draw the word letter by letter, strafing the base between letters."""
+        self._letters = list(self._text)
+        self._letter_idx = 0
+        self.get_logger().info(
+            f"Drawing {len(self._letters)} letters, strafing "
+            f"{LETTER_PITCH*100:.1f} cm between each: {self._text!r}"
+        )
+        self._draw_next_letter()
+
+    def _draw_next_letter(self) -> None:
+        if self._letter_idx >= len(self._letters):
+            self._stop_base()
             self._signal_done()
             return
 
+        ch = self._letters[self._letter_idx]
+        traj, duration, skipped = self._build_letter_traj(ch)
+
+        if skipped:
+            self.get_logger().warn(
+                f"Letter {ch!r}: {skipped} waypoints out of reach – skipped"
+            )
+
+        if not traj.points:
+            # Nothing to draw (space or fully unreachable) – just advance.
+            self.get_logger().info(f"Letter {ch!r}: nothing to draw, advancing")
+            self._after_letter()
+            return
+
+        self.get_logger().info(
+            f"Letter {self._letter_idx + 1}/{len(self._letters)} {ch!r}: "
+            f"{len(traj.points)} waypoints (~{duration} s)"
+        )
+        self._stop_base()              # ensure the base holds still while drawing
+        self.arm_pub.publish(traj)
+        self._done_timer = self.create_timer(float(duration), self._on_letter_complete)
+
+    def _on_letter_complete(self) -> None:
+        if self._done_timer:
+            self._done_timer.cancel()
+            self._done_timer = None
+        self._after_letter()
+
+    def _after_letter(self) -> None:
+        """Advance to the next letter, strafing the base by one letter pitch."""
+        self._letter_idx += 1
+        if self._letter_idx >= len(self._letters):
+            self._stop_base()
+            self._signal_done()
+            return
+        # Pen is already raised at the end of the letter trajectory; strafe now.
+        self._start_strafe(LETTER_PITCH)
+
+    def _build_letter_traj(self, ch: str):
+        """Build a JointTrajectory for one letter, centred in front of the arm.
+
+        Returns (trajectory, total_seconds, skipped_count). The trajectory
+        ends with the pen raised so the base can strafe safely afterwards.
+        """
         traj = JointTrajectory()
         traj.joint_names = [
             "shoulder_pan_joint", "shoulder_lift_joint",
             "elbow_joint",        "wrist_joint",
         ]
+
+        strokes = STROKES.get(ch, [])
+        waypoints: list[tuple[float, float, float]] = []
+        for stroke in strokes:
+            # Pen up: move to the first point of the stroke at lift height
+            lx, ly = stroke[0]
+            fwd, lat = self._letter_to_robot(lx, ly)
+            waypoints.append((fwd, lat, self._draw_z + PEN_LIFT))
+            # Pen down: draw each point in the stroke
+            for lx, ly in stroke:
+                fwd, lat = self._letter_to_robot(lx, ly)
+                waypoints.append((fwd, lat, self._draw_z))
+
+        if waypoints:
+            # End raised and centred, ready for the base to strafe.
+            waypoints.append((DRAW_X_CENTER, 0.0, self._draw_z + PEN_LIFT + TRAVEL_LIFT))
 
         t = DRAW_STEP_SEC
         skipped = 0
@@ -325,65 +425,68 @@ class SandDrawer(Node):
             traj.points.append(wp)
             t += DRAW_STEP_SEC
 
-        if skipped:
-            self.get_logger().warn(
-                f"{skipped}/{len(waypoints)} waypoints out of reach – skipped. "
-                f"If many, shrink LETTER_* or move DRAW_X_CENTER into the "
-                f"reachable band (see startup self-test)."
-            )
+        return traj, t, skipped
 
-        if not traj.points:
-            self.get_logger().warn("All waypoints out of reach")
-            self._signal_done()
-            return
-
-        self.get_logger().info(
-            f"Drawing {len(traj.points)} waypoints  "
-            f"(~{t} s)  text={self._text!r}"
-        )
-        self.arm_pub.publish(traj)
-        self._done_timer = self.create_timer(float(t), self._on_draw_complete)
-
-    def _text_to_waypoints(self, text: str) -> list[tuple[float, float, float]]:
-        """Convert text to (forward, lateral, z) base-frame coords with pen-up moves."""
-        n = len(text)
-        total_w = n * LETTER_WIDTH + max(0, n - 1) * LETTER_GAP
-        lat_start = -total_w / 2  # centre the text laterally
-
-        waypoints: list[tuple[float, float, float]] = []
-
-        for i, ch in enumerate(text):
-            strokes = STROKES.get(ch, [])
-            lat_letter = lat_start + i * (LETTER_WIDTH + LETTER_GAP)
-
-            for stroke in strokes:
-                # Pen up: move to first point of stroke at lift height
-                lx, ly = stroke[0]
-                fwd, lat = self._letter_to_robot(lx, ly, lat_letter)
-                waypoints.append((fwd, lat, self._draw_z + PEN_LIFT))
-
-                # Pen down: draw each point in the stroke
-                for lx, ly in stroke:
-                    fwd, lat = self._letter_to_robot(lx, ly, lat_letter)
-                    waypoints.append((fwd, lat, self._draw_z))
-
-        return waypoints
-
-    def _letter_to_robot(
-        self, lx: float, ly: float, lat_offset: float
-    ) -> tuple[float, float]:
+    def _letter_to_robot(self, lx: float, ly: float) -> tuple[float, float]:
         """
-        Map normalised letter coordinates to robot (forward, lateral).
-          lx [0-1]: horizontal in letter  → robot lateral axis
+        Map normalised letter coordinates to robot (forward, lateral), with the
+        letter centred laterally in front of the arm.
+          lx [0-1]: horizontal in letter  → robot lateral axis (centred)
           ly [0-1]: vertical in letter    → robot forward axis
         """
         fwd = DRAW_X_CENTER + (ly - 0.5) * LETTER_HEIGHT
-        lat = lat_offset + lx * LETTER_WIDTH
+        lat = (lx - 0.5) * LETTER_WIDTH
         return fwd, lat
 
-    def _on_draw_complete(self) -> None:
-        self._done_timer.cancel()
-        self._signal_done()
+    # -- Base strafing -------------------------------------------------------
+
+    def _start_strafe(self, distance: float) -> None:
+        """Strafe the base sideways by `distance` metres (closed-loop on odom)."""
+        if self._odom_xy is None:
+            self.get_logger().warn(
+                f"No odom on {ODOM_TOPIC}; strafing open-loop for "
+                f"{distance/STRAFE_SPEED:.1f} s instead"
+            )
+        self._strafe_start = self._odom_xy
+        self._strafe_t0 = self._now()
+        self._strafe_timer = self.create_timer(0.05, lambda: self._strafe_step(distance))
+
+    def _strafe_step(self, distance: float) -> None:
+        if self._mode != "DRAWING":
+            self._stop_base()
+            if self._strafe_timer:
+                self._strafe_timer.cancel()
+                self._strafe_timer = None
+            return
+
+        elapsed = self._now() - self._strafe_t0
+
+        if self._strafe_start is not None and self._odom_xy is not None:
+            moved = math.dist(self._odom_xy, self._strafe_start)
+            done = moved >= distance
+        else:
+            # open-loop fallback: drive for distance / speed seconds
+            done = elapsed >= distance / STRAFE_SPEED
+
+        if done or elapsed >= STRAFE_TIMEOUT:
+            if elapsed >= STRAFE_TIMEOUT and not done:
+                self.get_logger().warn("Strafe timed out – continuing anyway")
+            self._stop_base()
+            if self._strafe_timer:
+                self._strafe_timer.cancel()
+                self._strafe_timer = None
+            self._draw_next_letter()
+            return
+
+        twist = Twist()
+        twist.linear.y = STRAFE_SIGN * STRAFE_SPEED
+        self.base_pub.publish(twist)
+
+    def _stop_base(self) -> None:
+        self.base_pub.publish(Twist())
+
+    def _now(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
 
     # -- Forward / inverse kinematics ---------------------------------------
     # Derived and numerically verified against the real Mirte Master URDF.
@@ -500,6 +603,10 @@ class SandDrawer(Node):
             self._probe_timer.cancel()
         if self._done_timer:
             self._done_timer.cancel()
+        if self._strafe_timer:
+            self._strafe_timer.cancel()
+            self._strafe_timer = None
+        self._stop_base()
 
 
 # ---------------------------------------------------------------------------
