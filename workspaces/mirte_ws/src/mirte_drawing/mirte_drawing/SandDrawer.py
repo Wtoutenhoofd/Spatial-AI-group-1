@@ -48,11 +48,10 @@ Kinematics (verified against the real Mirte Master URDF)
 
   Direction: shoulder_pan's zero points to the BACK and it only swings ±90°,
   so reaching the robot FRONT uses the mirrored fold (negative reach, with
-  negative lift/elbow). With the short pen the wrist must sit low
-  (WRIST_DRAW_HEIGHT≈-0.03), which folds the arm near its limit and leaves a
-  small workspace: letters draw in a band roughly 0.25–0.29 m in FRONT of the
-  robot. Keep the letters small (see layout constants below); for longer
-  words the base strafes between letters instead of widening the reach.
+  negative lift/elbow). There is no sand: letters are traced a few cm above
+  the floor (WRIST_DRAW_HEIGHT=0 → pen tip ~3 cm up), in a band roughly
+  0.27–0.33 m in FRONT of the robot. For longer words the base strafes
+  between letters instead of widening the reach.
 
 Calibration – adjust for your robot/sim
   WRIST_DRAW_HEIGHT  – wrist z (frame_link) while drawing; lower it if the
@@ -98,20 +97,18 @@ EFFORT_THRESHOLD: float = 0.5 # joint effort (Nm) that signals sand contact
 # Set to True to skip probing and draw at a fixed wrist height (for testing).
 SKIP_PROBING: bool = True
 
-# Wrist z (frame_link) held while drawing. A pen mounted where the gripper
-# fingers were (≈2.5 cm long, pointing the finger direction) puts its tip
-# about 6.5 cm below the wrist in the draw pose, so the wrist must sit low for
-# the tip to reach the sand. Pen-depth sensitivity is ≈1:1 with this value:
-#   tip digs in  → raise WRIST_DRAW_HEIGHT (toward 0)
-#   tip floats   → lower it (more negative)
-#   longer pen   → raise by ≈(extra length); shorter pen → lower
+# Wrist z (frame_link) held while drawing. There is no sand, so the letters
+# are traced a few cm ABOVE the floor. A pen mounted where the gripper fingers
+# were (≈2.5 cm long, pointing the finger direction) sits ~6.5 cm below the
+# wrist, so at WRIST_DRAW_HEIGHT=0 the pen tip clears the ground by ~3 cm.
+# Pen-tip height tracks this value ≈1:1:
+#   draw nearer the floor → lower WRIST_DRAW_HEIGHT (≈-0.03 would touch)
+#   draw higher up        → raise it
 PEN_LENGTH:        float = 0.025  # pen length below the gripper mount (m), informational
-WRIST_DRAW_HEIGHT: float = -0.030
+WRIST_DRAW_HEIGHT: float = 0.0
 WRIST_DRAW_ANGLE:  float = 0.0    # wrist_joint angle to aim the pen downward (rad)
 
-# Small lift is enough to clear the sand (pen depth tracks the wrist ≈1:1),
-# and a large lift would leave the arm's narrow folded-down workspace.
-PEN_LIFT: float = 0.006       # how much to raise the wrist between strokes (m)
+PEN_LIFT: float = 0.015       # how much to raise the wrist between strokes (m)
 
 # Probing lowers the wrist height at the draw centre until effort spikes.
 PROBE_Z_START: float = 0.05   # wrist height to start probing from (m)
@@ -123,9 +120,9 @@ PROBE_INTERVAL: float = 0.5   # seconds between probe steps
 # Drawing layout  (sized to the reachable band – keep letters small!)
 # ---------------------------------------------------------------------------
 
-DRAW_X_CENTER:  float = 0.270 # center forward distance of drawing area (m)
-LETTER_HEIGHT:  float = 0.040 # letter extent in the forward direction (m)
-LETTER_WIDTH:   float = 0.034 # letter extent in the lateral direction (m)
+DRAW_X_CENTER:  float = 0.300 # center forward distance of drawing area (m)
+LETTER_HEIGHT:  float = 0.055 # letter extent in the forward direction (m)
+LETTER_WIDTH:   float = 0.050 # letter extent in the lateral direction (m)
 LETTER_GAP:     float = 0.015 # gap between letters (m)
 DRAW_STEP_SEC:  int   = 2     # seconds per waypoint
 
@@ -143,7 +140,7 @@ ODOM_TOPIC:     str   = "/odom"
 STRAFE_SPEED:   float = 0.05  # base strafe speed (m/s)
 STRAFE_SIGN:    float = -1.0  # +1 = base moves left (+y); -1 = right. Flip if word is mirrored
 STRAFE_TIMEOUT: float = 15.0  # safety: max seconds for one strafe before giving up
-TRAVEL_LIFT:    float = 0.006 # extra wrist lift while the base is moving (m)
+TRAVEL_LIFT:    float = 0.015 # extra wrist lift while the base is moving (m)
 
 # ---------------------------------------------------------------------------
 # Single-stroke font
@@ -442,9 +439,11 @@ class SandDrawer(Node):
         letter centred laterally in front of the arm.
           lx [0-1]: horizontal in letter  → robot lateral axis (centred)
           ly [0-1]: vertical in letter    → robot forward axis
+        The lateral axis is flipped (0.5 - lx) so letters read un-mirrored from
+        the front; if the word order comes out reversed, flip STRAFE_SIGN.
         """
         fwd = DRAW_X_CENTER + (ly - 0.5) * LETTER_HEIGHT
-        lat = (lx - 0.5) * LETTER_WIDTH
+        lat = (0.5 - lx) * LETTER_WIDTH
         return fwd, lat
 
     # -- Base strafing -------------------------------------------------------
