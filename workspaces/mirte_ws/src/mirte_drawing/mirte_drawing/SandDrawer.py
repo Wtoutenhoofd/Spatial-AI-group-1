@@ -20,14 +20,33 @@ Flow
   IDLE  (publishes DONE on /state_change)
 
 Subscriptions
-  /robot_state     (std_msgs/String)       – pipeline state gate
-  /whiteboard_text (std_msgs/String)       – JSON: {"text": "HELLO", ...}
+  /robot_state     (std_msgs/String)        – pipeline state gate
+  /whiteboard_text (std_msgs/String)        – JSON: {"text": "HELLO", ...}
+  /target_angle    (std_msgs/String)        – JSON: {"angle_x": …, "angle_y": …,
+                                              "bbox_area": <px²>}; bbox_area is
+                                              used to scale letters to the sandbox
   /joint_states    (sensor_msgs/JointState) – effort feedback for probing
+  /odom            (nav_msgs/Odometry)      – closed-loop strafe control
 
 Publications
   /state_change    (std_msgs/String)       – DONE when drawing complete
   /mirte_master_arm_controller/joint_trajectory
                    (trajectory_msgs/JointTrajectory)
+  /cmd_vel         (geometry_msgs/Twist)   – base strafe commands
+
+Letter sizing
+─────────────
+  At the start of each draw the node calls _compute_letter_sizes(), which
+  converts the last received bbox_area (pixels²) to a sandbox dimension in
+  metres using the camera FOV (60°) and the robot's stopping distance
+  (SANDBOX_STOP_DIST = 0.5 m).  Letter width is chosen so that the entire
+  word fits across the sandbox; letter height is chosen so that one letter
+  fits in the sandbox depth.  Both dimensions are clamped to
+  [MIN_LETTER_SIZE, MAX_LETTER_HEIGHT / MAX_LETTER_WIDTH] to keep every
+  waypoint within arm reach.  If no bbox_area has been received the
+  hardcoded defaults (LETTER_HEIGHT / LETTER_WIDTH) are used instead.
+  Tune SANDBOX_SCALE_FACTOR if bbox_area is the ArUco marker area rather
+  than the full sandbox area.
 
 Kinematics (verified against the real Mirte Master URDF)
 ────────────────────────────────────────────────────────
@@ -48,18 +67,19 @@ Kinematics (verified against the real Mirte Master URDF)
 
   Direction: shoulder_pan's zero points to the BACK and it only swings ±90°,
   so reaching the robot FRONT uses the mirrored fold (negative reach, with
-  negative lift/elbow). There is no sand: letters are traced a few cm above
-  the floor (WRIST_DRAW_HEIGHT=0 → pen tip ~3 cm up), in a band roughly
-  0.27–0.33 m in FRONT of the robot. For longer words the base strafes
-  between letters instead of widening the reach.
+  negative lift/elbow). Letters are traced in a band roughly 0.27–0.33 m in
+  FRONT of the robot. For longer words the base strafes between letters
+  instead of widening the reach.
 
 Calibration – adjust for your robot/sim
-  WRIST_DRAW_HEIGHT  – wrist z (frame_link) while drawing; lower it if the
-                       pen does not reach the sand, raise it if it digs in
-  WRIST_DRAW_ANGLE   – wrist_joint angle that points the pen down
-  PEN_LIFT           – how much to raise the wrist between strokes
-  L1, L2             – link lengths (match the URDF: 0.1378 / 0.14265)
-  EFFORT_THRESHOLD   – press arm gently on a surface and read /joint_states
+  WRIST_DRAW_HEIGHT   – wrist z (frame_link) while drawing; lower it if the
+                        pen does not reach the sand, raise it if it digs in
+  WRIST_DRAW_ANGLE    – wrist_joint angle that points the pen down
+  PEN_LIFT            – how much to raise the wrist between strokes
+  L1, L2              – link lengths (match the URDF: 0.1378 / 0.14265)
+  EFFORT_THRESHOLD    – press arm gently on a surface and read /joint_states
+  SANDBOX_STOP_DIST   – LiDAR distance at which the robot stops before the sandbox
+  SANDBOX_SCALE_FACTOR – increase if bbox_area is the marker, not the full sandbox
 """
 
 import json
@@ -130,6 +150,24 @@ DRAW_STEP_SEC:  int   = 2     # seconds per waypoint
 # drawn centred in front of the arm; the base strafes this exact distance
 # between letters, so a word of any length stays within the arm's reach.
 LETTER_PITCH:   float = LETTER_WIDTH + LETTER_GAP
+
+# ---------------------------------------------------------------------------
+# Sandbox-aware letter sizing
+# ---------------------------------------------------------------------------
+# bbox_area (pixels²) from /target_angle is converted to metres using the
+# camera FOV and the robot's stopping distance during TRACK_SANDPIT.
+# SANDBOX_SCALE_FACTOR: set to 1.0 if bbox_area is the sandbox area in pixels;
+# increase it (e.g. 5.0) if bbox_area is only the ArUco marker area and the
+# sandbox is larger than the marker.
+SANDBOX_STOP_DIST:    float = 0.5          # LiDAR stop distance for TRACK_SANDPIT (m)
+SANDBOX_FOV_RAD:      float = math.pi / 3  # camera horizontal FOV – matches ArucoDetectionSand
+SANDBOX_IMG_WIDTH:    int   = 640          # camera image width – matches ArucoDetectionSand
+SANDBOX_SCALE_FACTOR: float = 1.0          # scale bbox_area→sandbox; tune if needed
+SANDBOX_MARGIN:       float = 0.85         # fraction of sandbox dimension used for drawing
+# Hard limits to keep letters within arm reach
+MAX_LETTER_HEIGHT:    float = 0.060        # max letter height – forward direction (m)
+MAX_LETTER_WIDTH:     float = 0.090        # max letter width  – lateral direction (m)
+MIN_LETTER_SIZE:      float = 0.015        # minimum letter dimension (m)
 
 # ---------------------------------------------------------------------------
 # Base motion – per-letter sideways shift (mecanum strafe)
@@ -222,6 +260,7 @@ class SandDrawer(Node):
         # ── Subscribers ──────────────────────────────────────────────────────
         self.create_subscription(String,     "/robot_state",     self._state_callback,      10)
         self.create_subscription(String,     "/whiteboard_text", self._text_callback,        10)
+        self.create_subscription(String,     "/target_angle",    self._target_callback,      10)
         self.create_subscription(JointState, "/joint_states",    self._joint_state_callback, 10)
         self.create_subscription(Odometry,   ODOM_TOPIC,         self._odom_callback,        10)
 
@@ -244,6 +283,13 @@ class SandDrawer(Node):
         self._strafe_timer       = None
         self._strafe_start: tuple[float, float] | None = None
         self._strafe_t0: float   = 0.0
+
+        # Sandbox size (pixels²) from /target_angle; used to scale letters
+        self._bbox_area: float | None = None
+        # Active letter dimensions, recomputed each draw call
+        self._cur_letter_height: float = LETTER_HEIGHT
+        self._cur_letter_width:  float = LETTER_WIDTH
+        self._cur_letter_pitch:  float = LETTER_PITCH
 
         self._selftest()
 
@@ -277,6 +323,13 @@ class SandDrawer(Node):
             self.get_logger().info(f"Text to draw: {self._text!r}")
         except Exception as exc:
             self.get_logger().warn(f"Text parse error: {exc}")
+
+    def _target_callback(self, msg: String) -> None:
+        try:
+            data = json.loads(msg.data)
+            self._bbox_area = float(data["bbox_area"])
+        except Exception as exc:
+            self.get_logger().warn(f"Target parse error: {exc}")
 
     def _joint_state_callback(self, msg: JointState) -> None:
         for i, name in enumerate(msg.name):
@@ -345,11 +398,55 @@ class SandDrawer(Node):
         """Draw the word letter by letter, strafing the base between letters."""
         self._letters = list(self._text)
         self._letter_idx = 0
+        self._compute_letter_sizes(len(self._letters))
         self.get_logger().info(
             f"Drawing {len(self._letters)} letters, strafing "
-            f"{LETTER_PITCH*100:.1f} cm between each: {self._text!r}"
+            f"{self._cur_letter_pitch*100:.1f} cm between each: {self._text!r}"
         )
         self._draw_next_letter()
+
+    def _compute_letter_sizes(self, n_letters: int) -> None:
+        """Compute letter dimensions that fit the detected sandbox and arm reach.
+
+        Uses bbox_area (px²) from /target_angle, converted to metres via the
+        camera FOV and the robot's stopping distance during TRACK_SANDPIT.
+        Falls back to the hardcoded defaults when no sandbox data is available.
+        """
+        if self._bbox_area is None or self._bbox_area <= 0 or n_letters == 0:
+            self._cur_letter_height = LETTER_HEIGHT
+            self._cur_letter_width  = LETTER_WIDTH
+            self._cur_letter_pitch  = LETTER_PITCH
+            self.get_logger().info(
+                "No sandbox size available – using default letter dimensions"
+            )
+            return
+
+        # Convert bbox_area (px²) → sandbox dimension (m).
+        # sqrt(bbox_area) ≈ sandbox edge in pixels (assumes roughly square sandbox).
+        m_per_px = (2.0 * SANDBOX_STOP_DIST * math.tan(SANDBOX_FOV_RAD / 2.0)) / SANDBOX_IMG_WIDTH
+        sandbox_dim_m = math.sqrt(self._bbox_area) * m_per_px * SANDBOX_SCALE_FACTOR
+
+        avail = sandbox_dim_m * SANDBOX_MARGIN  # usable sandbox dimension in both axes
+
+        # Height: one letter must fit in the sandbox depth (forward direction).
+        h = max(MIN_LETTER_SIZE, min(MAX_LETTER_HEIGHT, avail))
+
+        # Width: the whole word must fit in the sandbox width (lateral direction).
+        # word_width = n*w + (n-1)*gap  where gap = (LETTER_GAP/LETTER_WIDTH) * w
+        k = LETTER_GAP / LETTER_WIDTH  # keep gap-to-width ratio constant
+        denom = n_letters + (n_letters - 1) * k
+        w = max(MIN_LETTER_SIZE, min(MAX_LETTER_WIDTH, avail / denom))
+
+        self._cur_letter_height = h
+        self._cur_letter_width  = w
+        self._cur_letter_pitch  = w + w * k
+
+        self.get_logger().info(
+            f"Sandbox: bbox_area={self._bbox_area:.0f} px²  "
+            f"→ dim≈{sandbox_dim_m*100:.1f} cm | "
+            f"letter: w={w*100:.1f} cm  h={h*100:.1f} cm  "
+            f"pitch={self._cur_letter_pitch*100:.1f} cm  n={n_letters}"
+        )
 
     def _draw_next_letter(self) -> None:
         if self._letter_idx >= len(self._letters):
@@ -393,7 +490,7 @@ class SandDrawer(Node):
             self._signal_done()
             return
         # Pen is already raised at the end of the letter trajectory; strafe now.
-        self._start_strafe(LETTER_PITCH)
+        self._start_strafe(self._cur_letter_pitch)
 
     def _build_letter_traj(self, ch: str):
         """Build a JointTrajectory for one letter, centred in front of the arm.
@@ -448,8 +545,8 @@ class SandDrawer(Node):
         The lateral axis is flipped (0.5 - lx) so letters read un-mirrored from
         the front; if the word order comes out reversed, flip STRAFE_SIGN.
         """
-        fwd = DRAW_X_CENTER + (ly - 0.5) * LETTER_HEIGHT
-        lat = (0.5 - lx) * LETTER_WIDTH
+        fwd = DRAW_X_CENTER + (ly - 0.5) * self._cur_letter_height
+        lat = (0.5 - lx) * self._cur_letter_width
         return fwd, lat
 
     # -- Base strafing -------------------------------------------------------
