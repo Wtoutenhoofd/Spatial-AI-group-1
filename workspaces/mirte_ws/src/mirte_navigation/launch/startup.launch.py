@@ -18,23 +18,23 @@ def generate_launch_description():
         output='screen'
     )
 
-    text_detector = Node(
-        package='mirte_perception',
-        executable='TextDetector',
-        name='TextDetector',
+    white_board_tracker = Node(
+        package='mirte_navigation',
+        executable='WhiteBoardTracker',
+        name='WhiteBoardTracker',
         output='screen'
     )
 
-    vision_controller = Node(
-        package='mirte_navigation',
-        executable='VisionController',
-        name='VisionController',
+    sandpit_tracker = Node(
+        package='mirte_perception',
+        executable='ArucoDetector',
+        name='ArucoDetector',
         output='screen'
     )
 
     return LaunchDescription([
         state_manager,
         detector,
-        text_detector,
-        vision_controller
+        sandpit_tracker,
+        white_board_tracker
     ])
